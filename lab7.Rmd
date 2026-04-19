@@ -209,3 +209,92 @@ Además, permite interpretar el impacto de las variables sobre el precio, lo cua
 
 ```
 ```
+
+## Tuneo
+```{r}
+library(glmnet)
+
+# Matrices para glmnet
+x_train <- model.matrix(is_cara ~ . -price -price_cat, data = train)[, -1]
+y_train <- train$is_cara
+
+x_test <- model.matrix(is_cara ~ . -price -price_cat, data = test)[, -1]
+y_test <- test$is_cara
+
+# Grid de hiperparámetros
+grid <- expand.grid(
+  alpha = c(0, 0.5, 1),
+  lambda = seq(0.0001, 1, length = 20)
+)
+
+control <- trainControl(method = "cv", number = 5)
+
+modelo_reg <- train(
+  x = x_train,
+  y = as.factor(y_train),
+  method = "glmnet",
+  trControl = control,
+  tuneGrid = grid
+)
+
+modelo_reg
+
+prob_reg <- predict(modelo_reg, newdata = as.data.frame(x_test), type = "prob")[,2]
+pred_reg <- ifelse(prob_reg > 0.5, 1, 0)
+
+confusionMatrix(as.factor(pred_reg), as.factor(y_test))
+```
+
+El modelo presenta una alta sensibilidad (0.89), lo que indica una buena capacidad para identificar propiedades no caras. Sin embargo, la especificidad es considerablemente menor (0.55), evidenciando dificultades para detectar propiedades caras.
+
+Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Dependiendo del contexto de negocio, este tipo de error puede ser más costoso.
+
+El proceso de regularización permitió identificar que un modelo tipo LASSO con baja penalización ofrece el mejor desempeño. Esto indica que las variables utilizadas son relevantes y que el modelo no requiere una reducción significativa de complejidad.
+
+## matriz
+
+```{r}
+conf <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))
+conf
+
+library(profvis)
+
+profvis({
+  modelo_log <- glm(
+    is_cara ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+    data = train,
+    family = binomial
+  )
+})
+```
+
+El modelo alcanza una accuracy cercana al 78%, con una alta sensibilidad (≈ 0.89) y una especificidad moderada (≈ 0.56). Esto indica que identifica correctamente la mayoría de propiedades no caras, pero presenta dificultades para detectar propiedades caras.
+
+Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Este tipo de error puede ser relevante dependiendo del contexto de negocio.
+
+##  índice de Youden
+
+```{r}
+roc_obj <- roc(test$is_cara, prob_test)
+
+best <- coords(roc_obj, "best", best.method = "youden")
+best
+
+threshold <- as.numeric(best["threshold"])
+
+pred_opt <- ifelse(prob_test > threshold, 1, 0)
+
+conf_opt <- confusionMatrix(as.factor(pred_opt), as.factor(test$is_cara))
+conf_opt
+
+conf_log$overall['Accuracy']
+conf_opt$overall['Accuracy']
+```
+
+El umbral de decisión de 0.5 no resulta óptimo para este conjunto de datos. Utilizando el índice de Youden se obtuvo un nuevo umbral que mejora el balance entre sensibilidad y especificidad.
+
+Con el umbral tradicional (0.5), el modelo presentaba una alta sensibilidad (≈ 0.89) pero una baja especificidad (≈ 0.56), lo que indicaba una fuerte tendencia a clasificar las propiedades como no caras.
+
+Al utilizar el umbral óptimo, la sensibilidad disminuye (≈ 0.77), pero la especificidad aumenta considerablemente (≈ 0.75), logrando un modelo más equilibrado. Además, el balanced accuracy mejora, lo que refleja un mejor desempeño global entre ambas clases.
