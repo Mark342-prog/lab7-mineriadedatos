@@ -293,8 +293,102 @@ conf_log$overall['Accuracy']
 conf_opt$overall['Accuracy']
 ```
 
+```{r}
+AIC(modelo_log)
+
+BIC(modelo_log)
+```
+
+
 El umbral de decisión de 0.5 no resulta óptimo para este conjunto de datos. Utilizando el índice de Youden se obtuvo un nuevo umbral que mejora el balance entre sensibilidad y especificidad.
 
 Con el umbral tradicional (0.5), el modelo presentaba una alta sensibilidad (≈ 0.89) pero una baja especificidad (≈ 0.56), lo que indicaba una fuerte tendencia a clasificar las propiedades como no caras.
 
 Al utilizar el umbral óptimo, la sensibilidad disminuye (≈ 0.77), pero la especificidad aumenta considerablemente (≈ 0.75), logrando un modelo más equilibrado. Además, el balanced accuracy mejora, lo que refleja un mejor desempeño global entre ambas clases.
+
+
+## Selección del mejor modelo
+
+Para determinar cuál es el mejor modelo, primero se consideraron ciertas métricas como lo son el: AIC, BIC, accuracy, sensibilidad, especificidad y el análisis del tiempo de ejecución.
+
+El modelo de regresión logística base presentan un AIC = 42004.21 y BIC = 42091.11 relativamente bajos, lo que indica un buen balance entre el ajuste y complejidad. Sobre el desempeño predictivo, tanto como el modelo original como el modelo regularizado presentan una accuracy muy similar (~78%), sin mejoras significativas tras la regularización.
+
+El modelo con umbral optimizado (indice de Youden) mejora el balance entre la sensibilidad y especificidad (balanced accuracy ≈ 0.76), a pesar de que reduce ligeramente el accuracy total (de 0.778 a 0.765).
+
+Conociendo lo anterior podemos afirmar que el mejor modelo depende del objetivo:
+- Si se busca "maximizar accuracy", el modelo original con un umbral de 0.5 es suficiente.
+- Pero si se busca "balancear errores entre clases", el modelo con umbral optimizado es superior.
+
+En nuestro contexto actual, el modelo con umbral ajustado debido al índice de Youden, se considera el más adecuado, esto porque ofrece un mejor equilibrio entre la detección de propiedades caras y no caras.
+
+
+## Modelo con variable categoría (multiclase)
+
+```{r}
+# Modelo multiclase (barata, media, cara)
+
+train$price_cat <- as.factor(train$price_cat)
+test$price_cat  <- as.factor(test$price_cat)
+
+modelo_multi <- train(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+               minimum_nights + maximum_nights + availability_365 +
+               number_of_reviews + review_scores_rating,
+  data = train,
+  method = "multinom",
+  trControl = trainControl(method = "cv", number = 5)
+)
+
+modelo_multi
+```
+
+```{r}
+#Predicción y evaluación
+pred_multi <- predict(modelo_multi, newdata = test)
+
+conf_multi <- confusionMatrix(pred_multi, test$price_cat)
+conf_multi
+
+conf_multi$overall['Accuracy']
+```
+
+## Modelo de regresión logística multiclase
+
+Se ha implementado un modelo de regresión logística multiclase para poder predecir la categoría de precio (barata, media, cara)
+. El modelo reutiliza las mismas variables para predecir que el modelo dicotómico, y fue evaluado mediante la validación cruzada
+
+El modelo fue evaluado mediante validación cruzada, obteniendo una accuracy de aproximadamente 0.5939, lo cual es considerablemente menor que la obtenida en el modelo binario (~0.78). Este resultado es el esperado, ya que el problema multiclase es más complejo al tener tres categorías en lugar de dos.
+
+A partir de la matriz de confusión, observamos que:
+- La clase "media" presenta la menor sensibilidad (~0.37), lo que nos indica que es la más difícil de predecir.
+- Las clases "barata" y "cara" presentan los mejores resultados, con sensibilidades cercanas al 0.70.
+- Existe una confusión significativa entre las categorías "media" y "cara", así como entre "media" y "barata".
+
+Esto nos indica que la categoría "media" no está tan bien diferenciada en el espacio de características, lo cual afecta mucho al desempeño global del modelo. Podemos concluir que, el modelo de multiclases presenta una menor eficiencia debido que tiene mayor complejidad el problema y la superposición entre clases.
+
+
+
+## Comparación con modelos anteriores
+
+Se comparó el modelo de regresión logística con los modelos desarrollados en los laboratorios anteriores, como los de: KNN, Árbol de Decisión, Random Forest y Naive Bayes.
+
+Sobre el tiempo de procesamiento, la regresión logística es uno de los modelos más eficientes, ya que su entrenamiento es relativamente rápido en comparación con modelos como Random Forest, debido a que requieren la construcción de múltiples árboles.
+
+# Desempeño:
+- La regresión logística obtuvo una accuracy cercana al 78% en el modelo binario, lo cual es competitivo frente a otros modelos.
+- El modelo multiclase presenta menor accuracy (~59%), evidenciando la dificultad del problema.
+- Modelos como el Random Forest suelen tener mucha mayor precisión, pero esto conlleva un mayor costo computacional.
+- KNN puede ser más costoso en predicción debido al cálculo de distancias.
+- Y Naive Bayes a pesar de ser veloz, puede perder precisión debido a su supuesto de independencia entre variables.
+
+# Errores:
+- La regresión logística tiende a cometer más errores en clases intermedias (como la clase "media").
+- Los modelos más complejos pueden reducir dichos errores pero a su vez sacrifican interpretabilidad.
+
+
+En conclusión, en base a lo anteriormente analizado, la regresión logística ofrece el mejor balance entre:
+- Interpretabilidad
+- Eficiencia computacional
+- Desempeño predictivo
+
+Por lo que es acertado concluir que, es una opción adecuada para este problema, especialmente cuando se requiere explicar el impacto de las variables en la clasificación.
