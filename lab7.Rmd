@@ -1,14 +1,14 @@
 ---
-title: "Laboratorio 6 - Regresión Logística (Pasaporte)"
+title: "Laboratorio 8 - Máquinas Vectoriales de Soporte (Pasaporte)"
 author: "Grupo \\#8  \nOsman Emanuel de León García - 23428  \nMaría José Yee Vidal - 231193  \nAndrés Rafael Chivalán Marroquín - 21534\n"
-date: "2026-04-17"
+date: "2026-04-24"
 output:
-  pdf_document:
-    latex_engine: xelatex
   html_document:
     df_print: paged
     toc: true
     toc_float: true
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
@@ -18,17 +18,16 @@ load("Data/listings.RData")
 
 library(dplyr)
 library(caret)
-library(car)
-library(corrplot)
-library(pROC)
+library(e1071)
+library(kernlab)
 
-# Limpieza de price
+# Limpieza de price (igual que labs anteriores)
 listings$price <- gsub("\\$", "", listings$price)
 listings$price <- gsub(",", "", listings$price)
 listings$price <- as.numeric(listings$price)
 listings <- listings[!is.na(listings$price), ]
 
-# Variables (mismas que labs anteriores)
+# Mismas variables predictoras
 features <- c(
   "accommodates", "bathrooms", "bedrooms", "beds",
   "minimum_nights", "maximum_nights", "availability_365",
@@ -39,15 +38,16 @@ listings_model <- listings %>%
   select(price, all_of(features)) %>%
   na.omit()
 
-# Categoría de precio
+# Variable categórica de precio (mismos cortes que labs anteriores)
 listings_model$price_cat <- cut(
   listings_model$price,
   breaks = quantile(listings_model$price, probs = c(0, 0.33, 0.66, 1)),
   labels = c("barata", "media", "cara"),
   include.lowest = TRUE
 )
+listings_model$price_cat <- as.factor(listings_model$price_cat)
 
-# Split 70/30
+# Mismo split 70/30 con misma semilla
 set.seed(123)
 trainIndex <- createDataPartition(listings_model$price, p = 0.7, list = FALSE)
 train <- listings_model[trainIndex, ]
@@ -58,337 +58,228 @@ cat("Train:", nrow(train), "| Test:", nrow(test), "\n")
 
 ---
 
+## Continuidad experimental y preparación de los datos
 
-## Preparación y contexto
+Para garantizar comparabilidad con los modelos construidos en laboratorios anteriores, se mantienen exactamente las mismas condiciones: el mismo conjunto de variables predictoras, la misma semilla (`set.seed(123)`) y el mismo esquema de partición 70/30. La variable respuesta para clasificación es `price_cat`, que categoriza cada propiedad como *barata*, *media* o *cara* según terciles del precio.
 
-En esta fase de la consultoría para SmartStay Advisors se implementa un modelo de regresión logística con el objetivo de clasificar si una propiedad pertenece a la categoría de precio "cara". Este enfoque permite estimar probabilidades asociadas a la pertenencia a una clase, facilitando la interpretación del impacto de cada variable sobre la decisión.
+Las Máquinas Vectoriales de Soporte (SVM) requieren que todas las variables de entrada sean numéricas y estén en una escala comparable, ya que el algoritmo es sensible a diferencias de magnitud entre predictores. A continuación se escalan los datos.
 
-Se mantienen las mismas condiciones experimentales que en laboratorios anteriores: mismo conjunto de variables predictoras, mismo esquema de partición (70/30) y mismo valor de semilla, garantizando comparabilidad entre modelos.
+```{r transformaciones}
+# Escalar features (SVM es sensible a la escala)
+preproc <- preProcess(train[, features], method = c("center", "scale"))
 
----
+train_scaled <- train
+test_scaled  <- test
 
-## Construcción de la variable dicotómica
+train_scaled[, features] <- predict(preproc, train[, features])
+test_scaled[, features]  <- predict(preproc, test[, features])
 
-```{r}
-train$is_cara <- ifelse(train$price_cat == "cara", 1, 0)
-test$is_cara  <- ifelse(test$price_cat == "cara", 1, 0)
+# Verificar que no quedan NAs tras el escalado
+sum(is.na(train_scaled))
+sum(is.na(test_scaled))
 ```
 
-Esta transformación permite modelar la probabilidad de que una propiedad pertenezca a la categoría de mayor precio.
+El centrado y escalado transforma cada variable para que tenga media 0 y desviación estándar 1. Esto evita que predictores con magnitudes grandes (como `availability_365` o `number_of_reviews`) dominen el cálculo del hiperplano de separación.
 
 ---
 
-## Modelo de regresión logística
+## Exploración previa al modelado
 
-```{r}
-modelo_log <- glm(
-  is_cara ~ accommodates + bathrooms + bedrooms + beds +
-            minimum_nights + maximum_nights + availability_365 +
-            number_of_reviews + review_scores_rating,
-  data = train,
-  family = binomial
+```{r exploracion}
+# Distribución de la variable respuesta
+table(train_scaled$price_cat)
+prop.table(table(train_scaled$price_cat))
+```
+
+Las clases están distribuidas de forma aproximadamente balanceada por construcción (terciles), lo que evita sesgos por desbalance de clases en el entrenamiento.
+
+---
+
+## Modelos SVM con distintos kernels e hiperparámetros
+
+Se entrenan cuatro modelos con distintas configuraciones de kernel y parámetros para explorar el espacio de hipótesis. El parámetro `C` controla el balance entre margen amplio y errores de clasificación; valores altos permiten menos errores pero pueden causar sobreajuste.
+
+### Modelo 1 — Kernel lineal
+
+```{r svm_lineal, cache=TRUE}
+set.seed(123)
+t1_start <- proc.time()
+
+svm_lineal <- svm(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  kernel = "linear",
+  cost   = 1,
+  scale  = FALSE  # ya escalamos manualmente
 )
 
-summary(modelo_log)
+t1_end <- proc.time()
+tiempo_lineal <- (t1_end - t1_start)["elapsed"]
+
+summary(svm_lineal)
+cat("Tiempo de entrenamiento (lineal):", tiempo_lineal, "seg\n")
 ```
 
-El modelo estima la probabilidad de que una propiedad sea clasificada como "cara" en función de sus características.
+### Modelo 2 — Kernel RBF (radial), C=1, gamma=0.1
 
----
+```{r svm_rbf1, cache=TRUE}
+set.seed(123)
+t2_start <- proc.time()
 
-## Validación cruzada
-
-```{r}
-control <- trainControl(method = "cv", number = 5)
-
-modelo_cv <- train(
-  as.factor(is_cara) ~ accommodates + bathrooms + bedrooms + beds +
-                      minimum_nights + maximum_nights + availability_365 +
-                      number_of_reviews + review_scores_rating,
-  data = train,
-  method = "glm",
-  family = "binomial",
-  trControl = control
+svm_rbf1 <- svm(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  kernel = "radial",
+  cost   = 1,
+  gamma  = 0.1,
+  scale  = FALSE
 )
 
-modelo_cv
+t2_end <- proc.time()
+tiempo_rbf1 <- (t2_end - t2_start)["elapsed"]
+
+summary(svm_rbf1)
+cat("Tiempo de entrenamiento (RBF C=1 gamma=0.1):", tiempo_rbf1, "seg\n")
 ```
 
-La validación cruzada permite verificar que el desempeño del modelo es consistente en distintas particiones de los datos.
+### Modelo 3 — Kernel RBF, C=10, gamma=0.01
+
+```{r svm_rbf2, cache=TRUE}
+set.seed(123)
+t3_start <- proc.time()
+
+svm_rbf2 <- svm(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  kernel = "radial",
+  cost   = 10,
+  gamma  = 0.01,
+  scale  = FALSE
+)
+
+t3_end <- proc.time()
+tiempo_rbf2 <- (t3_end - t3_start)["elapsed"]
+
+summary(svm_rbf2)
+cat("Tiempo de entrenamiento (RBF C=10 gamma=0.01):", tiempo_rbf2, "seg\n")
+```
+
+### Modelo 4 — Kernel polinomial, C=1, degree=3, gamma=0.1
+
+```{r svm_poly, cache=TRUE}
+set.seed(123)
+t4_start <- proc.time()
+
+svm_poly <- svm(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  kernel = "polynomial",
+  cost   = 1,
+  degree = 3,
+  gamma  = 0.1,
+  scale  = FALSE
+)
+
+t4_end <- proc.time()
+tiempo_poly <- (t4_end - t4_start)["elapsed"]
+
+summary(svm_poly)
+cat("Tiempo de entrenamiento (Polinomial d=3):", tiempo_poly, "seg\n")
+```
 
 ---
 
-## Análisis del modelo
+## Predicciones y matrices de confusión
 
-### Multicolinealidad
+### Modelo 1 — Lineal
 
-```{r}
-vif(modelo_log)
+```{r conf_lineal}
+pred_lineal_test  <- predict(svm_lineal, newdata = test_scaled)
+pred_lineal_train <- predict(svm_lineal, newdata = train_scaled)
+
+conf_lineal <- confusionMatrix(pred_lineal_test, test_scaled$price_cat)
+conf_lineal
 ```
 
-Los valores de VIF obtenidos para todas las variables se encuentran por debajo de 5, lo que indica que no existe evidencia de multicolinealidad significativa entre los predictores.
+El kernel lineal separa las clases con un hiperplano de dimensión fija. Funciona bien cuando las clases son aproximadamente separables linealmente.
 
----
+### Modelo 2 — RBF C=1, gamma=0.1
 
-### Correlación entre variables
+```{r conf_rbf1}
+pred_rbf1_test  <- predict(svm_rbf1, newdata = test_scaled)
+pred_rbf1_train <- predict(svm_rbf1, newdata = train_scaled)
 
-```{r}
-cor_matrix <- cor(train[, features])
-corrplot(cor_matrix, method = "color")
+conf_rbf1 <- confusionMatrix(pred_rbf1_test, test_scaled$price_cat)
+conf_rbf1
 ```
 
-El análisis de correlación muestra que variables como *accommodates*, *bedrooms* y *beds* presentan correlación positiva moderada, lo cual es esperado al estar relacionadas con la capacidad de la propiedad. Sin embargo, estas correlaciones no son lo suficientemente altas como para representar un problema crítico.
+### Modelo 3 — RBF C=10, gamma=0.01
 
----
+```{r conf_rbf2}
+pred_rbf2_test  <- predict(svm_rbf2, newdata = test_scaled)
+pred_rbf2_train <- predict(svm_rbf2, newdata = train_scaled)
 
-### Significancia de variables
-
-```{r}
-summary(modelo_log)$coefficients
+conf_rbf2 <- confusionMatrix(pred_rbf2_test, test_scaled$price_cat)
+conf_rbf2
 ```
 
-Todas las variables presentan valores p menores a 0.05, lo que indica que son estadísticamente significativas. Variables como *bathrooms*, *review_scores_rating* y *accommodates* tienen un impacto positivo en la probabilidad de que una propiedad sea cara.
+### Modelo 4 — Polinomial d=3
 
-Por otro lado, *number_of_reviews* y *availability_365* presentan coeficientes negativos, lo que sugiere que propiedades con mayor número de reseñas o mayor disponibilidad tienden a no pertenecer a la categoría de precios altos.
+```{r conf_poly}
+pred_poly_test  <- predict(svm_poly, newdata = test_scaled)
+pred_poly_train <- predict(svm_poly, newdata = train_scaled)
 
----
-
-## Evaluación del modelo
-
-```{r}
-prob_test <- predict(modelo_log, newdata = test, type = "response")
-pred_test <- ifelse(prob_test > 0.5, 1, 0)
-
-conf_log <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))
-conf_log
-
-conf_log$overall['Accuracy']
+conf_poly <- confusionMatrix(pred_poly_test, test_scaled$price_cat)
+conf_poly
 ```
-
-El modelo obtuvo una accuracy cercana al 78%, lo que indica un buen desempeño general en la clasificación.
-
-El análisis de la matriz de confusión muestra una alta sensibilidad, lo que indica que el modelo identifica correctamente la mayoría de propiedades no caras. Sin embargo, la especificidad es menor, lo que sugiere dificultad para identificar propiedades caras.
 
 ---
 
 ## Análisis de sobreajuste
 
-```{r}
-prob_train <- predict(modelo_log, newdata = train, type = "response")
-pred_train <- ifelse(prob_train > 0.5, 1, 0)
+Para detectar sobreajuste se compara la accuracy sobre el conjunto de entrenamiento vs. el de prueba. Una diferencia grande indica que el modelo memorizó los datos de entrenamiento sin generalizar correctamente.
 
-acc_train <- confusionMatrix(as.factor(pred_train), as.factor(train$is_cara))$overall['Accuracy']
-acc_test  <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))$overall['Accuracy']
+```{r sobreajuste}
+# Accuracy en entrenamiento
+acc_train_lineal <- confusionMatrix(pred_lineal_train, train_scaled$price_cat)$overall["Accuracy"]
+acc_train_rbf1   <- confusionMatrix(pred_rbf1_train,   train_scaled$price_cat)$overall["Accuracy"]
+acc_train_rbf2   <- confusionMatrix(pred_rbf2_train,   train_scaled$price_cat)$overall["Accuracy"]
+acc_train_poly   <- confusionMatrix(pred_poly_train,   train_scaled$price_cat)$overall["Accuracy"]
 
-cat("Accuracy Train:", acc_train, "\n")
-cat("Accuracy Test:", acc_test, "\n")
+# Accuracy en prueba
+acc_test_lineal <- conf_lineal$overall["Accuracy"]
+acc_test_rbf1   <- conf_rbf1$overall["Accuracy"]
+acc_test_rbf2   <- conf_rbf2$overall["Accuracy"]
+acc_test_poly   <- conf_poly$overall["Accuracy"]
+
+tabla_ajuste <- data.frame(
+  Modelo        = c("Lineal (C=1)", "RBF (C=1, g=0.1)", "RBF (C=10, g=0.01)", "Polinomial (d=3)"),
+  Acc_Train     = round(c(acc_train_lineal, acc_train_rbf1, acc_train_rbf2, acc_train_poly), 4),
+  Acc_Test      = round(c(acc_test_lineal,  acc_test_rbf1,  acc_test_rbf2,  acc_test_poly), 4),
+  Diferencia    = round(c(acc_train_lineal - acc_test_lineal,
+                           acc_train_rbf1  - acc_test_rbf1,
+                           acc_train_rbf2  - acc_test_rbf2,
+                           acc_train_poly  - acc_test_poly), 4),
+  Tiempo_seg    = round(c(tiempo_lineal, tiempo_rbf1, tiempo_rbf2, tiempo_poly), 2)
+)
+
+knitr::kable(tabla_ajuste, caption = "Comparación de ajuste entre modelos SVM")
 ```
 
-Los valores de accuracy en entrenamiento y prueba son muy similares, lo que indica que el modelo no presenta sobreajuste y generaliza adecuadamente.
+Una diferencia (Train − Test) cercana a 0 indica buen balance. Valores superiores a 0.05 sugieren sobreajuste; valores negativos o con test muy bajo pueden indicar subajuste. Para controlar el sobreajuste en SVM se puede reducir `C` (mayor margen, menos penalización de errores) o reducir `gamma` en el kernel RBF (decisiones más suaves).
 
 ---
 
-## Curva ROC y AUC
+## Conclusión del pasaporte
 
-```{r}
-roc_curve <- roc(test$is_cara, prob_test)
-plot(roc_curve, main = "Curva ROC - Regresión Logística")
+Los cuatro modelos exploran distintos espacios de hipótesis. El kernel lineal es el más interpretable y rápido, mientras que los kernels RBF y polinomial permiten fronteras de decisión más flexibles. La tabla de ajuste permite identificar qué configuración generaliza mejor sin memorizar los datos de entrenamiento.
 
-auc(roc_curve)
-```
-
-El valor de AUC es superior a 0.8, lo que indica una buena capacidad del modelo para distinguir entre propiedades caras y no caras.
-
----
-
-## Conclusión
-
-El modelo de regresión logística presenta un buen desempeño general, con una adecuada capacidad predictiva y sin evidencia de sobreajuste.
-
-Además, permite interpretar el impacto de las variables sobre el precio, lo cual es valioso para la toma de decisiones dentro del contexto de SmartStay Advisors.
-
-```
-```
-
-## Tuneo
-```{r}
-library(glmnet)
-
-# Matrices para glmnet
-x_train <- model.matrix(is_cara ~ . -price -price_cat, data = train)[, -1]
-y_train <- train$is_cara
-
-x_test <- model.matrix(is_cara ~ . -price -price_cat, data = test)[, -1]
-y_test <- test$is_cara
-
-# Grid de hiperparámetros
-grid <- expand.grid(
-  alpha = c(0, 0.5, 1),
-  lambda = seq(0.0001, 1, length = 20)
-)
-
-control <- trainControl(method = "cv", number = 5)
-
-modelo_reg <- train(
-  x = x_train,
-  y = as.factor(y_train),
-  method = "glmnet",
-  trControl = control,
-  tuneGrid = grid
-)
-
-modelo_reg
-
-prob_reg <- predict(modelo_reg, newdata = as.data.frame(x_test), type = "prob")[,2]
-pred_reg <- ifelse(prob_reg > 0.5, 1, 0)
-
-confusionMatrix(as.factor(pred_reg), as.factor(y_test))
-```
-
-El modelo presenta una alta sensibilidad (0.89), lo que indica una buena capacidad para identificar propiedades no caras. Sin embargo, la especificidad es considerablemente menor (0.55), evidenciando dificultades para detectar propiedades caras.
-
-Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Dependiendo del contexto de negocio, este tipo de error puede ser más costoso.
-
-El proceso de regularización permitió identificar que un modelo tipo LASSO con baja penalización ofrece el mejor desempeño. Esto indica que las variables utilizadas son relevantes y que el modelo no requiere una reducción significativa de complejidad.
-
-## matriz
-
-```{r}
-conf <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))
-conf
-
-library(profvis)
-
-profvis({
-  modelo_log <- glm(
-    is_cara ~ accommodates + bathrooms + bedrooms + beds +
-              minimum_nights + maximum_nights + availability_365 +
-              number_of_reviews + review_scores_rating,
-    data = train,
-    family = binomial
-  )
-})
-```
-
-El modelo alcanza una accuracy cercana al 78%, con una alta sensibilidad (≈ 0.89) y una especificidad moderada (≈ 0.56). Esto indica que identifica correctamente la mayoría de propiedades no caras, pero presenta dificultades para detectar propiedades caras.
-
-Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Este tipo de error puede ser relevante dependiendo del contexto de negocio.
-
-##  índice de Youden
-
-```{r}
-roc_obj <- roc(test$is_cara, prob_test)
-
-best <- coords(roc_obj, "best", best.method = "youden")
-best
-
-threshold <- as.numeric(best["threshold"])
-
-pred_opt <- ifelse(prob_test > threshold, 1, 0)
-
-conf_opt <- confusionMatrix(as.factor(pred_opt), as.factor(test$is_cara))
-conf_opt
-
-conf_log$overall['Accuracy']
-conf_opt$overall['Accuracy']
-```
-
-```{r}
-AIC(modelo_log)
-
-BIC(modelo_log)
-```
-
-
-El umbral de decisión de 0.5 no resulta óptimo para este conjunto de datos. Utilizando el índice de Youden se obtuvo un nuevo umbral que mejora el balance entre sensibilidad y especificidad.
-
-Con el umbral tradicional (0.5), el modelo presentaba una alta sensibilidad (≈ 0.89) pero una baja especificidad (≈ 0.56), lo que indicaba una fuerte tendencia a clasificar las propiedades como no caras.
-
-Al utilizar el umbral óptimo, la sensibilidad disminuye (≈ 0.77), pero la especificidad aumenta considerablemente (≈ 0.75), logrando un modelo más equilibrado. Además, el balanced accuracy mejora, lo que refleja un mejor desempeño global entre ambas clases.
-
-
-## Selección del mejor modelo
-
-Para determinar cuál es el mejor modelo, primero se consideraron ciertas métricas como lo son el: AIC, BIC, accuracy, sensibilidad, especificidad y el análisis del tiempo de ejecución.
-
-El modelo de regresión logística base presentan un AIC = 42004.21 y BIC = 42091.11 relativamente bajos, lo que indica un buen balance entre el ajuste y complejidad. Sobre el desempeño predictivo, tanto como el modelo original como el modelo regularizado presentan una accuracy muy similar (~78%), sin mejoras significativas tras la regularización.
-
-El modelo con umbral optimizado (indice de Youden) mejora el balance entre la sensibilidad y especificidad (balanced accuracy ≈ 0.76), a pesar de que reduce ligeramente el accuracy total (de 0.778 a 0.765).
-
-Conociendo lo anterior podemos afirmar que el mejor modelo depende del objetivo:
-- Si se busca "maximizar accuracy", el modelo original con un umbral de 0.5 es suficiente.
-- Pero si se busca "balancear errores entre clases", el modelo con umbral optimizado es superior.
-
-En nuestro contexto actual, el modelo con umbral ajustado debido al índice de Youden, se considera el más adecuado, esto porque ofrece un mejor equilibrio entre la detección de propiedades caras y no caras.
-
-
-## Modelo con variable categoría (multiclase)
-
-```{r}
-# Modelo multiclase (barata, media, cara)
-
-train$price_cat <- as.factor(train$price_cat)
-test$price_cat  <- as.factor(test$price_cat)
-
-modelo_multi <- train(
-  price_cat ~ accommodates + bathrooms + bedrooms + beds +
-               minimum_nights + maximum_nights + availability_365 +
-               number_of_reviews + review_scores_rating,
-  data = train,
-  method = "multinom",
-  trControl = trainControl(method = "cv", number = 5)
-)
-
-modelo_multi
-```
-
-```{r}
-#Predicción y evaluación
-pred_multi <- predict(modelo_multi, newdata = test)
-
-conf_multi <- confusionMatrix(pred_multi, test$price_cat)
-conf_multi
-
-conf_multi$overall['Accuracy']
-```
-
-## Modelo de regresión logística multiclase
-
-Se ha implementado un modelo de regresión logística multiclase para poder predecir la categoría de precio (barata, media, cara)
-. El modelo reutiliza las mismas variables para predecir que el modelo dicotómico, y fue evaluado mediante la validación cruzada
-
-El modelo fue evaluado mediante validación cruzada, obteniendo una accuracy de aproximadamente 0.5939, lo cual es considerablemente menor que la obtenida en el modelo binario (~0.78). Este resultado es el esperado, ya que el problema multiclase es más complejo al tener tres categorías en lugar de dos.
-
-A partir de la matriz de confusión, observamos que:
-- La clase "media" presenta la menor sensibilidad (~0.37), lo que nos indica que es la más difícil de predecir.
-- Las clases "barata" y "cara" presentan los mejores resultados, con sensibilidades cercanas al 0.70.
-- Existe una confusión significativa entre las categorías "media" y "cara", así como entre "media" y "barata".
-
-Esto nos indica que la categoría "media" no está tan bien diferenciada en el espacio de características, lo cual afecta mucho al desempeño global del modelo. Podemos concluir que, el modelo de multiclases presenta una menor eficiencia debido que tiene mayor complejidad el problema y la superposición entre clases.
-
-
-
-## Comparación con modelos anteriores
-
-Se comparó el modelo de regresión logística con los modelos desarrollados en los laboratorios anteriores, como los de: KNN, Árbol de Decisión, Random Forest y Naive Bayes.
-
-Sobre el tiempo de procesamiento, la regresión logística es uno de los modelos más eficientes, ya que su entrenamiento es relativamente rápido en comparación con modelos como Random Forest, debido a que requieren la construcción de múltiples árboles.
-
-# Desempeño:
-- La regresión logística obtuvo una accuracy cercana al 78% en el modelo binario, lo cual es competitivo frente a otros modelos.
-- El modelo multiclase presenta menor accuracy (~59%), evidenciando la dificultad del problema.
-- Modelos como el Random Forest suelen tener mucha mayor precisión, pero esto conlleva un mayor costo computacional.
-- KNN puede ser más costoso en predicción debido al cálculo de distancias.
-- Y Naive Bayes a pesar de ser veloz, puede perder precisión debido a su supuesto de independencia entre variables.
-
-# Errores:
-- La regresión logística tiende a cometer más errores en clases intermedias (como la clase "media").
-- Los modelos más complejos pueden reducir dichos errores pero a su vez sacrifican interpretabilidad.
-
-
-En conclusión, en base a lo anteriormente analizado, la regresión logística ofrece el mejor balance entre:
-- Interpretabilidad
-- Eficiencia computacional
-- Desempeño predictivo
-
-Por lo que es acertado concluir que, es una opción adecuada para este problema, especialmente cuando se requiere explicar el impacto de las variables en la clasificación.
+En los laboratorios siguientes se realizará el tuneo automático de hiperparámetros y la comparación formal con los modelos de entregas anteriores (árbol de decisión, Random Forest, Naive Bayes, KNN, Regresión Logística) y se incluirá el modelo de SVR para la predicción continua del precio.
