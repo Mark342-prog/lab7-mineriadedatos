@@ -283,3 +283,106 @@ Una diferencia (Train − Test) cercana a 0 indica buen balance. Valores superio
 Los cuatro modelos exploran distintos espacios de hipótesis. El kernel lineal es el más interpretable y rápido, mientras que los kernels RBF y polinomial permiten fronteras de decisión más flexibles. La tabla de ajuste permite identificar qué configuración generaliza mejor sin memorizar los datos de entrenamiento.
 
 En los laboratorios siguientes se realizará el tuneo automático de hiperparámetros y la comparación formal con los modelos de entregas anteriores (árbol de decisión, Random Forest, Naive Bayes, KNN, Regresión Logística) y se incluirá el modelo de SVR para la predicción continua del precio.
+
+
+### Comparación modelos SVM
+
+En términos de efectividad (accuracy), los modelos con kernel no lineal (RBF y polinomial) suelen superar al modelo lineal, ya que pueden capturar relaciones más complejas entre las variables. En particular:
+
+* El modelo RBF con C alto tiende a lograr mayor accuracy en entrenamiento, pero puede presentar sobreajuste.
+* El modelo RBF con gamma más bajo suele generalizar mejor, logrando un balance más adecuado entre entrenamiento y prueba.
+* El modelo lineal presenta menor accuracy, pero es más estable y rápido.
+* El modelo polinomial puede mejorar frente al lineal, aunque no siempre supera al RBF.
+
+En cuanto al tiempo de procesamiento:
+
+- El kernel lineal es el más rápido.
+- Los modelos RBF son más costosos computacionalmente.
+- El polinomial también requiere más tiempo, especialmente con grados mayores.
+
+### Comparación modelos SVM
+
+Al comparar el mejor modelo SVM con los modelos anteriores:
+
+Efectividad
+* Random Forest suele ser uno de los mejores en accuracy general.
+* SVM (RBF) compite muy de cerca y en algunos casos puede superarlo.
+* Regresión logística y Naive Bayes suelen tener menor desempeño por asumir relaciones más simples.
+* KNN depende mucho del valor de k y la escala, pudiendo ser competitivo pero menos estable.
+
+Tiempo de procesamiento:
+- Más rápidos: Naive Bayes, Regresión Logística
+- Intermedios: Árbol de decisión, KNN
+- Más lentos: Random Forest y SVM 
+
+### Tabla comparativa de sobreajuste
+```{r}
+
+acc_train_lineal <- confusionMatrix(pred_lineal_train, train_scaled$price_cat)$overall["Accuracy"]
+acc_train_rbf1   <- confusionMatrix(pred_rbf1_train,   train_scaled$price_cat)$overall["Accuracy"]
+acc_train_rbf2   <- confusionMatrix(pred_rbf2_train,   train_scaled$price_cat)$overall["Accuracy"]
+acc_train_poly   <- confusionMatrix(pred_poly_train,   train_scaled$price_cat)$overall["Accuracy"]
+
+acc_test_lineal <- confusionMatrix(pred_lineal_test, test_scaled$price_cat)$overall["Accuracy"]
+acc_test_rbf1   <- confusionMatrix(pred_rbf1_test,   test_scaled$price_cat)$overall["Accuracy"]
+acc_test_rbf2   <- confusionMatrix(pred_rbf2_test,   test_scaled$price_cat)$overall["Accuracy"]
+acc_test_poly   <- confusionMatrix(pred_poly_test,   test_scaled$price_cat)$overall["Accuracy"]
+
+# Verificación rápida
+acc_train_lineal
+acc_test_lineal
+tabla_svm <- data.frame(
+  Modelo = c("SVM Lineal", "SVM RBF (C=1,g=0.1)", "SVM RBF (C=10,g=0.01)", "SVM Polinomial"),
+  
+  Acc_Train = c(
+    acc_train_lineal,
+    acc_train_rbf1,
+    acc_train_rbf2,
+    acc_train_poly
+  ),
+  
+  Acc_Test = c(
+    acc_test_lineal,
+    acc_test_rbf1,
+    acc_test_rbf2,
+    acc_test_poly
+  )
+)
+
+# Calcular diferencia automáticamente
+tabla_svm$Diferencia <- tabla_svm$Acc_Train - tabla_svm$Acc_Test
+
+# Mostrar tabla
+knitr::kable(tabla_svm, caption = "Comparación de modelos SVM")
+
+tabla_svm$Tipo_Modelo <- ifelse(
+  tabla_svm$Diferencia > 0.05, "Sobreajuste",
+  ifelse(tabla_svm$Acc_Test < 0.6, "Subajuste", "Buen ajuste")
+)
+
+knitr::kable(tabla_svm, caption = "Diagnóstico de sobreajuste en SVM")
+
+tabla_svm <- data.frame(
+  Modelo = c("SVM Lineal"),
+  
+  Acc_Train = c(0.5842576),
+  Acc_Test  = c(0.5888918)
+)
+
+# Diferencia
+tabla_svm$Diferencia <- tabla_svm$Acc_Train - tabla_svm$Acc_Test
+
+# Diagnóstico
+tabla_svm$Tipo_Modelo <- ifelse(
+  tabla_svm$Diferencia > 0.05, "Sobreajuste",
+  ifelse(tabla_svm$Acc_Test < 0.6, "Subajuste", "Buen ajuste")
+)
+
+knitr::kable(tabla_svm, caption = "Evaluación SVM Lineal")
+```
+
+El modelo SVM con kernel lineal presenta una accuracy de 0.584 en entrenamiento y 0.589 en prueba. La diferencia entre ambos valores es prácticamente nula (-0.0046), lo que indica que el modelo no presenta sobreajuste y generaliza de forma estable a nuevos datos.
+
+Sin embargo, su desempeño es relativamente bajo, lo que sugiere que las clases no son linealmente separables. Por ello, el modelo comete errores principalmente en la clasificación de la categoría media, que representa una zona de transición entre las clases barata y cara.
+
+En términos de eficiencia, el modelo lineal es el más rápido de entrenar, pero sacrifica capacidad predictiva frente a modelos más complejos.
