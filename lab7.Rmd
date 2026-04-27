@@ -3,12 +3,12 @@ title: "Laboratorio 8 - Máquinas Vectoriales de Soporte (Pasaporte)"
 author: "Grupo \\#8  \nOsman Emanuel de León García - 23428  \nMaría José Yee Vidal - 231193  \nAndrés Rafael Chivalán Marroquín - 21534\n"
 date: "2026-04-24"
 output:
+  pdf_document:
+    latex_engine: xelatex
   html_document:
     df_print: paged
     toc: true
     toc_float: true
-  pdf_document:
-    latex_engine: xelatex
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
