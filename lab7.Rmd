@@ -386,3 +386,140 @@ El modelo SVM con kernel lineal presenta una accuracy de 0.584 en entrenamiento 
 Sin embargo, su desempeño es relativamente bajo, lo que sugiere que las clases no son linealmente separables. Por ello, el modelo comete errores principalmente en la clasificación de la categoría media, que representa una zona de transición entre las clases barata y cara.
 
 En términos de eficiencia, el modelo lineal es el más rápido de entrenar, pero sacrifica capacidad predictiva frente a modelos más complejos.
+
+
+
+## Modelo de regresión
+```{r}
+# SVR con tuneo automático
+# Tuneo automático de hiperparámetros
+set.seed(123)
+muestra_idx <- sample(nrow(train_scaled), 5000)
+train_tune  <- train_scaled[muestra_idx, ]
+
+tune_svr <- tune(
+  svm,
+  price ~ accommodates + bathrooms + bedrooms + beds +
+          minimum_nights + maximum_nights + availability_365 +
+          number_of_reviews + review_scores_rating,
+  data   = train_tune,
+  kernel = "radial",
+  ranges = list(
+    cost    = c(0.1, 1, 10),
+    gamma   = c(0.01, 0.1, 0.5),
+    epsilon = c(0.01, 0.1, 0.5)
+  )
+)
+
+print(tune_svr)
+best_params <- tune_svr$best.parameters
+cat("Mejores parámetros:\n")
+print(best_params)
+
+# Entrenar SVR con mejores parámetros (más al conjunto de entrenamiento)
+t_svr_start <- proc.time()
+
+svr_best <- svm(
+  price ~ accommodates + bathrooms + bedrooms + beds +
+          minimum_nights + maximum_nights + availability_365 +
+          number_of_reviews + review_scores_rating,
+  data    = train_scaled,
+  kernel  = "radial",
+  cost    = best_params$cost,
+  gamma   = best_params$gamma,
+  epsilon = best_params$epsilon,
+  scale   = FALSE
+)
+
+t_svr_end  <- proc.time()
+tiempo_svr <- (t_svr_end - t_svr_start)["elapsed"]
+cat("Tiempo SVR:", tiempo_svr, "seg\n")
+
+# Predicciones
+pred_svr_train <- predict(svr_best, newdata = train_scaled)
+pred_svr_test  <- predict(svr_best, newdata = test_scaled)
+
+# Métricas
+rmse <- function(actual, predicted) sqrt(mean((actual - predicted)^2))
+mae  <- function(actual, predicted) mean(abs(actual - predicted))
+r2   <- function(actual, predicted) {
+  ss_res <- sum((actual - predicted)^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  1 - ss_res / ss_tot
+}
+
+metricas_svr <- data.frame(
+  Conjunto = c("Train", "Test"),
+  RMSE     = round(c(rmse(train_scaled$price, pred_svr_train),
+                     rmse(test_scaled$price,  pred_svr_test)), 2),
+  MAE      = round(c(mae(train_scaled$price,  pred_svr_train),
+                     mae(test_scaled$price,   pred_svr_test)), 2),
+  R2       = round(c(r2(train_scaled$price,   pred_svr_train),
+                     r2(test_scaled$price,    pred_svr_test)), 4)
+)
+
+print(metricas_svr)
+```
+
+El modelo SVR con kernel RBF se ha tuneado automáticamente mediante validación cruzada de 10 pliegues sobre una muestra de 5,000 observaciones, explorando combinaciones de cost ∈ {0.1, 1, 10}, gamma ∈ {0.01, 0.1, 0.5} y epsilon ∈ {0.01, 0.1, 0.5}.
+La configuración más óptima resultante fue de C=10, gamma=0.5, epsilon=0.01, con un error de validación cruzada de 4,519,160 (MSE).
+El modelo final entrenado sobre el conjunto completo (n=43,907) reportó un RMSE de 2,412.68 y MAE de 254.61 en entrenamiento, y RMSE de 2,738.14 y MAE de 288.82 en prueba, con un R² prácticamente nulo (−0.0011 en prueba).
+
+Esto nos indica que el modelo no logra explicar la varianza del precio, y su capacidad predictiva es equivalente a predecir la media constante. La variable precio, con su alta dispersión y valores atípicos extremos, no es capturada adecuadamente por las características disponibles que están bajo este kernel.
+
+
+
+
+## Tabla comparativa con modelos anteriores
+
+```{r}
+# Sustituir los valores de RMSE/MAE/R2 de los modelos anteriores
+# con los resultados reales que se obtuvo en labs pasados
+
+tabla_regresion <- data.frame(
+  Modelo = c(
+    "SVR (RBF tuneado)",
+    "Regresión Lineal",
+    "Árbol de Regresión",
+    "KNN Regresión",
+    "Naive Bayes (regresión)"
+  ),
+  RMSE_Test = c(
+    # SVR -> viene de metricas_svr$RMSE[2]
+    metricas_svr$RMSE[2],
+    # Reemplaza con valores reales:
+    NA, NA, NA, NA
+  ),
+  MAE_Test = c(
+    metricas_svr$MAE[2],
+    NA, NA, NA, NA
+  ),
+  R2_Test = c(
+    metricas_svr$R2[2],
+    NA, NA, NA, NA
+  )
+)
+
+print(tabla_regresion)
+```
+Para la comparación entre modelos de regresión debemos saber que en los laboratorios 3 y 4 se utilizaron log_price como variable respuesta con split 80/20 y set.seed(42), y a partir del laboratorio 5 hasta el presente se utiliza price directamente con 70/30 y set.seed(123), haceindo que las métricas entre ambos grupos no sean directamente comparables en magnitud.
+
+Dentro del grupo comparable, es decir, las mismas condiciones experimentales, el  Naive Bayes del Laboratorio 5 obtuvo RMSE=2,816.22, MAE=957.95 y R²=0.0028 sobre price;
+el KNN tuneado (k=15) del Laboratorio 6 reportó RMSE=2,516.13, MAE=331.42 y R²=0.157;
+y el SVR tuneado del presente laboratorio obtuvo RMSE=2,738.14, MAE=288.82 y R²=−0.001.
+
+El KNN resulta el mejor modelo en este grupo debido a su R^2 positivo (0.157), mientras que el SVR como Naive Bayes muestran R² casi nulos, lo que nos confirma que ninguno de los tres logra explicar adecuadamenta la varianza del precio continuo con las variables disponibles.
+
+
+
+
+
+## Síntesis de resultados de clasificación SVM
+
+Antes de la síntesis debemos recordas las nueve variables predictoras disponibles: accommodates, bathrooms, bedrooms, beds, minimum_nights, maximum_nights, availability_365, number_of_reviews, review_scores_rating.
+
+Los resultados obtenidos en ambas tareas de "Clasificación y regresión" nos revelan que tienen una limitación estructural compartida: las nueve variables predictoras disponibles tienen capacidad predictiva moderada sobre el precio de las propiedades Airbnb.
+
+Independientemente del algoritmo utilizado; en el área de clasificación, el mejor modelo SVM (RBF, C=1, gamma=0.1) alcanzó un accuracy de 0.6027 con Kappa=0.4037, sin presentar sobreajuste (diferencia Train−Test de apenas 0.006), pero sí obtuvo un subajuste evidente, especialmente en la clase media.
+
+Mientras que la regresión el SVR con kernel RBF tuneado (C=10, gamma=0.5, epsilon=0.01) produjo un R²≈0 en prueba con RMSE=2,738.14, evidenciando que el modelo no captura la varianza del precio continuo, se puede entender como un problema atribuible a la alta asimetría y presencia de valores extremos en la distribución de precios. Debido a lo definido del problema, para mejorar se recomienda incorporar variables de localicazión geográfica, el tipo de propiedad y reseñas.
