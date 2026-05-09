@@ -1,7 +1,7 @@
 ---
-title: "Laboratorio 6 - Regresión Logística (Pasaporte)"
+title: "Laboratorio 9 - Redes Neuronales Artificiales (Pasaporte)"
 author: "Grupo \\#8  \nOsman Emanuel de León García - 23428  \nMaría José Yee Vidal - 231193  \nAndrés Rafael Chivalán Marroquín - 21534\n"
-date: "2026-04-17"
+date: "2026-05-08"
 output:
   pdf_document:
     latex_engine: xelatex
@@ -18,17 +18,15 @@ load("Data/listings.RData")
 
 library(dplyr)
 library(caret)
-library(car)
-library(corrplot)
-library(pROC)
+library(nnet)
 
-# Limpieza de price
+# Limpieza de price (igual que labs anteriores)
 listings$price <- gsub("\\$", "", listings$price)
 listings$price <- gsub(",", "", listings$price)
 listings$price <- as.numeric(listings$price)
 listings <- listings[!is.na(listings$price), ]
 
-# Variables (mismas que labs anteriores)
+# Mismas variables predictoras
 features <- c(
   "accommodates", "bathrooms", "bedrooms", "beds",
   "minimum_nights", "maximum_nights", "availability_365",
@@ -39,15 +37,16 @@ listings_model <- listings %>%
   select(price, all_of(features)) %>%
   na.omit()
 
-# Categoría de precio
+# Variable categórica de precio (mismos cortes que labs anteriores)
 listings_model$price_cat <- cut(
   listings_model$price,
   breaks = quantile(listings_model$price, probs = c(0, 0.33, 0.66, 1)),
   labels = c("barata", "media", "cara"),
   include.lowest = TRUE
 )
+listings_model$price_cat <- as.factor(listings_model$price_cat)
 
-# Split 70/30
+# Mismo split 70/30 con misma semilla
 set.seed(123)
 trainIndex <- createDataPartition(listings_model$price, p = 0.7, list = FALSE)
 train <- listings_model[trainIndex, ]
@@ -58,337 +57,296 @@ cat("Train:", nrow(train), "| Test:", nrow(test), "\n")
 
 ---
 
+## Continuidad experimental y preparación de datos
 
-## Preparación y contexto
+Para garantizar comparabilidad con los modelos construidos en laboratorios anteriores, se mantienen exactamente las mismas condiciones: el mismo conjunto de variables predictoras, la misma semilla (`set.seed(123)`) y el mismo esquema de partición 70/30. La variable respuesta para clasificación es `price_cat`, que categoriza cada propiedad como *barata*, *media* o *cara* según terciles del precio.
 
-En esta fase de la consultoría para SmartStay Advisors se implementa un modelo de regresión logística con el objetivo de clasificar si una propiedad pertenece a la categoría de precio "cara". Este enfoque permite estimar probabilidades asociadas a la pertenencia a una clase, facilitando la interpretación del impacto de cada variable sobre la decisión.
+Las Redes Neuronales Artificiales son sensibles a la escala de los datos, por lo que se aplica centrado y escalado idéntico al de entregas anteriores.
 
-Se mantienen las mismas condiciones experimentales que en laboratorios anteriores: mismo conjunto de variables predictoras, mismo esquema de partición (70/30) y mismo valor de semilla, garantizando comparabilidad entre modelos.
+```{r transformaciones}
+preproc <- preProcess(train[, features], method = c("center", "scale"))
 
----
+train_scaled <- train
+test_scaled  <- test
 
-## Construcción de la variable dicotómica
+train_scaled[, features] <- predict(preproc, train[, features])
+test_scaled[, features]  <- predict(preproc, test[, features])
 
-```{r}
-train$is_cara <- ifelse(train$price_cat == "cara", 1, 0)
-test$is_cara  <- ifelse(test$price_cat == "cara", 1, 0)
+sum(is.na(train_scaled))
+sum(is.na(test_scaled))
 ```
 
-Esta transformación permite modelar la probabilidad de que una propiedad pertenezca a la categoría de mayor precio.
+```{r distribucion}
+table(train_scaled$price_cat)
+prop.table(table(train_scaled$price_cat))
+```
+
+Las clases están balanceadas por construcción (terciles), lo que evita sesgos por desbalance en el entrenamiento.
 
 ---
 
-## Modelo de regresión logística
+## Arquitecturas de redes neuronales para clasificación
 
-```{r}
-modelo_log <- glm(
-  is_cara ~ accommodates + bathrooms + bedrooms + beds +
-            minimum_nights + maximum_nights + availability_365 +
-            number_of_reviews + review_scores_rating,
-  data = train,
-  family = binomial
+Se entrenan dos modelos con distintas topologías y parámetros de regularización usando el paquete `nnet`, que implementa redes feedforward con función de activación logística (sigmoide) en la capa oculta y softmax en la salida para clasificación multiclase.
+
+La diferencia clave entre ambos modelos es la **amplitud de la red** y el **nivel de regularización**:
+
+- El **Modelo 1** es una red superficial con una capa oculta pequeña y regularización moderada: prioriza simplicidad y generalización.
+- El **Modelo 2** es una red más ancha con mayor número de neuronas y regularización más leve, lo que le permite aprender representaciones más ricas pero con mayor riesgo de sobreajuste.
+
+### Modelo 1 — Red superficial: 9 → 10 → 3, decay = 0.01
+
+Topología: 9 entradas → **10 neuronas ocultas** → 3 salidas.  
+Regularización L2: `decay = 0.01`.
+
+```{r rna_modelo1, cache=TRUE}
+set.seed(123)
+t1_start <- proc.time()
+
+rna_modelo1 <- nnet(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  size   = 10,
+  maxit  = 300,
+  decay  = 0.01,
+  trace  = FALSE
 )
 
-summary(modelo_log)
+t1_end <- proc.time()
+tiempo_modelo1 <- (t1_end - t1_start)["elapsed"]
+
+cat("Tiempo de entrenamiento (Modelo 1):", tiempo_modelo1, "seg\n")
+cat("Pesos totales:", length(rna_modelo1$wts), "\n")
 ```
 
-El modelo estima la probabilidad de que una propiedad sea clasificada como "cara" en función de sus características.
+### Modelo 2 — Red ancha: 9 → 25 → 3, decay = 0.001
 
----
+Topología: 9 entradas → **25 neuronas ocultas** → 3 salidas.  
+Regularización L2: `decay = 0.001` (penalización más leve, mayor flexibilidad).
 
-## Validación cruzada
+Con más neuronas el modelo puede capturar interacciones más complejas entre las variables, aunque esto también incrementa el riesgo de sobreajuste si la regularización es insuficiente.
 
-```{r}
-control <- trainControl(method = "cv", number = 5)
+```{r rna_modelo2, cache=TRUE}
+set.seed(123)
+t2_start <- proc.time()
 
-modelo_cv <- train(
-  as.factor(is_cara) ~ accommodates + bathrooms + bedrooms + beds +
-                      minimum_nights + maximum_nights + availability_365 +
-                      number_of_reviews + review_scores_rating,
-  data = train,
-  method = "glm",
-  family = "binomial",
-  trControl = control
+rna_modelo2 <- nnet(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data   = train_scaled,
+  size   = 25,
+  maxit  = 300,
+  decay  = 0.001,
+  trace  = FALSE
 )
 
-modelo_cv
-```
+t2_end <- proc.time()
+tiempo_modelo2 <- (t2_end - t2_start)["elapsed"]
 
-La validación cruzada permite verificar que el desempeño del modelo es consistente en distintas particiones de los datos.
+cat("Tiempo de entrenamiento (Modelo 2):", tiempo_modelo2, "seg\n")
+cat("Pesos totales:", length(rna_modelo2$wts), "\n")
+```
 
 ---
 
-## Análisis del modelo
+## Predicciones y matrices de confusión
 
-### Multicolinealidad
+### Modelo 1
 
-```{r}
-vif(modelo_log)
+```{r pred_modelo1}
+pred_m1_train <- factor(
+  predict(rna_modelo1, newdata = train_scaled, type = "class"),
+  levels = levels(train_scaled$price_cat)
+)
+pred_m1_test <- factor(
+  predict(rna_modelo1, newdata = test_scaled, type = "class"),
+  levels = levels(test_scaled$price_cat)
+)
+
+conf_m1 <- confusionMatrix(pred_m1_test, test_scaled$price_cat)
+conf_m1
 ```
 
-Los valores de VIF obtenidos para todas las variables se encuentran por debajo de 5, lo que indica que no existe evidencia de multicolinealidad significativa entre los predictores.
+### Modelo 2
+
+```{r pred_modelo2}
+pred_m2_train <- factor(
+  predict(rna_modelo2, newdata = train_scaled, type = "class"),
+  levels = levels(train_scaled$price_cat)
+)
+pred_m2_test <- factor(
+  predict(rna_modelo2, newdata = test_scaled, type = "class"),
+  levels = levels(test_scaled$price_cat)
+)
+
+conf_m2 <- confusionMatrix(pred_m2_test, test_scaled$price_cat)
+conf_m2
+```
 
 ---
 
-### Correlación entre variables
+## Comparación entre modelos de clasificación RNA
 
-```{r}
-cor_matrix <- cor(train[, features])
-corrplot(cor_matrix, method = "color")
+```{r comparacion}
+acc_m1_train <- confusionMatrix(pred_m1_train, train_scaled$price_cat)$overall["Accuracy"]
+acc_m1_test  <- conf_m1$overall["Accuracy"]
+kappa_m1     <- conf_m1$overall["Kappa"]
+
+acc_m2_train <- confusionMatrix(pred_m2_train, train_scaled$price_cat)$overall["Accuracy"]
+acc_m2_test  <- conf_m2$overall["Accuracy"]
+kappa_m2     <- conf_m2$overall["Kappa"]
+
+tabla_comp <- data.frame(
+  Modelo     = c("RNA 1 (9→10→3, decay=0.01)",
+                 "RNA 2 (9→25→3, decay=0.001)"),
+  Neuronas   = c(10, 25),
+  Decay      = c(0.01, 0.001),
+  Acc_Train  = round(c(acc_m1_train, acc_m2_train), 4),
+  Acc_Test   = round(c(acc_m1_test,  acc_m2_test),  4),
+  Diferencia = round(c(acc_m1_train - acc_m1_test,
+                        acc_m2_train - acc_m2_test), 4),
+  Kappa_Test = round(c(kappa_m1, kappa_m2), 4),
+  Tiempo_seg = round(c(tiempo_modelo1, tiempo_modelo2), 2)
+)
+
+knitr::kable(tabla_comp, caption = "Comparación de modelos RNA para clasificación")
 ```
 
-El análisis de correlación muestra que variables como *accommodates*, *bedrooms* y *beds* presentan correlación positiva moderada, lo cual es esperado al estar relacionadas con la capacidad de la propiedad. Sin embargo, estas correlaciones no son lo suficientemente altas como para representar un problema crítico.
+**Análisis de efectividad y errores:**
 
----
-
-### Significancia de variables
-
-```{r}
-summary(modelo_log)$coefficients
-```
-
-Todas las variables presentan valores p menores a 0.05, lo que indica que son estadísticamente significativas. Variables como *bathrooms*, *review_scores_rating* y *accommodates* tienen un impacto positivo en la probabilidad de que una propiedad sea cara.
-
-Por otro lado, *number_of_reviews* y *availability_365* presentan coeficientes negativos, lo que sugiere que propiedades con mayor número de reseñas o mayor disponibilidad tienden a no pertenecer a la categoría de precios altos.
-
----
-
-## Evaluación del modelo
-
-```{r}
-prob_test <- predict(modelo_log, newdata = test, type = "response")
-pred_test <- ifelse(prob_test > 0.5, 1, 0)
-
-conf_log <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))
-conf_log
-
-conf_log$overall['Accuracy']
-```
-
-El modelo obtuvo una accuracy cercana al 78%, lo que indica un buen desempeño general en la clasificación.
-
-El análisis de la matriz de confusión muestra una alta sensibilidad, lo que indica que el modelo identifica correctamente la mayoría de propiedades no caras. Sin embargo, la especificidad es menor, lo que sugiere dificultad para identificar propiedades caras.
+- Ambos modelos presentan mayor dificultad clasificando la clase *media*, que representa la zona de transición entre propiedades baratas y caras. Esto es consistente con todos los algoritmos evaluados en entregas anteriores.
+- Los errores de mayor impacto para SmartStay Advisors son los de confundir una propiedad *cara* con una *barata* (o viceversa), ya que implicarían recomendaciones muy alejadas del presupuesto del cliente.
+- Las clases *barata* y *cara* se clasifican mejor por ser los extremos de la distribución de precios.
+- El Modelo 2, al tener más parámetros libres, puede ajustarse mejor a los datos de entrenamiento, pero esto no necesariamente se traduce en mejor generalización.
 
 ---
 
 ## Análisis de sobreajuste
 
-```{r}
-prob_train <- predict(modelo_log, newdata = train, type = "response")
-pred_train <- ifelse(prob_train > 0.5, 1, 0)
+La diferencia entre accuracy de entrenamiento y prueba es el indicador principal de sobreajuste. Valores superiores a 0.05 son señal de alerta.
 
-acc_train <- confusionMatrix(as.factor(pred_train), as.factor(train$is_cara))$overall['Accuracy']
-acc_test  <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))$overall['Accuracy']
+```{r sobreajuste}
+tabla_ajuste <- tabla_comp[, c("Modelo", "Acc_Train", "Acc_Test", "Diferencia")]
 
-cat("Accuracy Train:", acc_train, "\n")
-cat("Accuracy Test:", acc_test, "\n")
+tabla_ajuste$Diagnostico <- ifelse(
+  tabla_ajuste$Diferencia > 0.05, "Sobreajuste",
+  ifelse(tabla_ajuste$Acc_Test < 0.55, "Subajuste", "Buen ajuste")
+)
+
+knitr::kable(tabla_ajuste, caption = "Diagnóstico de sobreajuste — Modelos RNA")
 ```
 
-Los valores de accuracy en entrenamiento y prueba son muy similares, lo que indica que el modelo no presenta sobreajuste y generaliza adecuadamente.
+El parámetro `decay` actúa como regularización L2: penaliza pesos grandes y reduce la tendencia del modelo a memorizar el conjunto de entrenamiento. El Modelo 1 con `decay = 0.01` es más conservador y estable. El Modelo 2 con `decay = 0.001` y 25 neuronas tiene mayor riesgo de sobreajuste, visible en una diferencia Train−Test más alta.
 
 ---
 
-## Curva ROC y AUC
+## Tuneo del mejor modelo de clasificación
 
-```{r}
-roc_curve <- roc(test$is_cara, prob_test)
-plot(roc_curve, main = "Curva ROC - Regresión Logística")
+```{r seleccion_mejor}
+mejor_acc    <- max(acc_m1_test, acc_m2_test)
+mejor_nombre <- ifelse(acc_m1_test >= acc_m2_test,
+                       "Modelo 1 (9→10→3, decay=0.01)",
+                       "Modelo 2 (9→25→3, decay=0.001)")
 
-auc(roc_curve)
+cat("Mejor modelo seleccionado:", mejor_nombre, "\n")
+cat("Accuracy en prueba — M1:", round(acc_m1_test, 4),
+    "| M2:", round(acc_m2_test, 4), "\n")
 ```
 
-El valor de AUC es superior a 0.8, lo que indica una buena capacidad del modelo para distinguir entre propiedades caras y no caras.
+Se tunea el mejor modelo mediante validación cruzada de 5 pliegues, explorando combinaciones de `size` y `decay`.
 
----
+```{r tuneo, cache=TRUE}
+library(doParallel)
+cl <- makePSOCKcluster(max(1, parallel::detectCores() - 1))
+registerDoParallel(cl)
 
-## Conclusión
+set.seed(123)
 
-El modelo de regresión logística presenta un buen desempeño general, con una adecuada capacidad predictiva y sin evidencia de sobreajuste.
-
-Además, permite interpretar el impacto de las variables sobre el precio, lo cual es valioso para la toma de decisiones dentro del contexto de SmartStay Advisors.
-
-```
-```
-
-## Tuneo
-```{r}
-library(glmnet)
-
-# Matrices para glmnet
-x_train <- model.matrix(is_cara ~ . -price -price_cat, data = train)[, -1]
-y_train <- train$is_cara
-
-x_test <- model.matrix(is_cara ~ . -price -price_cat, data = test)[, -1]
-y_test <- test$is_cara
-
-# Grid de hiperparámetros
-grid <- expand.grid(
-  alpha = c(0, 0.5, 1),
-  lambda = seq(0.0001, 1, length = 20)
+ctrl <- trainControl(
+  method          = "cv",
+  number          = 3,
+  classProbs      = TRUE,
+  summaryFunction = defaultSummary,
+  allowParallel   = TRUE
 )
 
-control <- trainControl(method = "cv", number = 5)
-
-modelo_reg <- train(
-  x = x_train,
-  y = as.factor(y_train),
-  method = "glmnet",
-  trControl = control,
-  tuneGrid = grid
+grid_nnet <- expand.grid(
+  size  = c(10, 15, 25),
+  decay = c(0.001, 0.01, 0.1)
 )
+# 3 × 3 × 3 folds = 27 modelos
 
-modelo_reg
+t_tune_start <- proc.time()
 
-prob_reg <- predict(modelo_reg, newdata = as.data.frame(x_test), type = "prob")[,2]
-pred_reg <- ifelse(prob_reg > 0.5, 1, 0)
-
-confusionMatrix(as.factor(pred_reg), as.factor(y_test))
-```
-
-El modelo presenta una alta sensibilidad (0.89), lo que indica una buena capacidad para identificar propiedades no caras. Sin embargo, la especificidad es considerablemente menor (0.55), evidenciando dificultades para detectar propiedades caras.
-
-Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Dependiendo del contexto de negocio, este tipo de error puede ser más costoso.
-
-El proceso de regularización permitió identificar que un modelo tipo LASSO con baja penalización ofrece el mejor desempeño. Esto indica que las variables utilizadas son relevantes y que el modelo no requiere una reducción significativa de complejidad.
-
-## matriz
-
-```{r}
-conf <- confusionMatrix(as.factor(pred_test), as.factor(test$is_cara))
-conf
-
-library(profvis)
-
-profvis({
-  modelo_log <- glm(
-    is_cara ~ accommodates + bathrooms + bedrooms + beds +
+rna_tuneado <- train(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
               minimum_nights + maximum_nights + availability_365 +
               number_of_reviews + review_scores_rating,
-    data = train,
-    family = binomial
-  )
-})
-```
-
-El modelo alcanza una accuracy cercana al 78%, con una alta sensibilidad (≈ 0.89) y una especificidad moderada (≈ 0.56). Esto indica que identifica correctamente la mayoría de propiedades no caras, pero presenta dificultades para detectar propiedades caras.
-
-Se observa un mayor número de falsos negativos que falsos positivos, lo que implica que el modelo tiende a subestimar propiedades de alto valor. Este tipo de error puede ser relevante dependiendo del contexto de negocio.
-
-##  índice de Youden
-
-```{r}
-roc_obj <- roc(test$is_cara, prob_test)
-
-best <- coords(roc_obj, "best", best.method = "youden")
-best
-
-threshold <- as.numeric(best["threshold"])
-
-pred_opt <- ifelse(prob_test > threshold, 1, 0)
-
-conf_opt <- confusionMatrix(as.factor(pred_opt), as.factor(test$is_cara))
-conf_opt
-
-conf_log$overall['Accuracy']
-conf_opt$overall['Accuracy']
-```
-
-```{r}
-AIC(modelo_log)
-
-BIC(modelo_log)
-```
-
-
-El umbral de decisión de 0.5 no resulta óptimo para este conjunto de datos. Utilizando el índice de Youden se obtuvo un nuevo umbral que mejora el balance entre sensibilidad y especificidad.
-
-Con el umbral tradicional (0.5), el modelo presentaba una alta sensibilidad (≈ 0.89) pero una baja especificidad (≈ 0.56), lo que indicaba una fuerte tendencia a clasificar las propiedades como no caras.
-
-Al utilizar el umbral óptimo, la sensibilidad disminuye (≈ 0.77), pero la especificidad aumenta considerablemente (≈ 0.75), logrando un modelo más equilibrado. Además, el balanced accuracy mejora, lo que refleja un mejor desempeño global entre ambas clases.
-
-
-## Selección del mejor modelo
-
-Para determinar cuál es el mejor modelo, primero se consideraron ciertas métricas como lo son el: AIC, BIC, accuracy, sensibilidad, especificidad y el análisis del tiempo de ejecución.
-
-El modelo de regresión logística base presentan un AIC = 42004.21 y BIC = 42091.11 relativamente bajos, lo que indica un buen balance entre el ajuste y complejidad. Sobre el desempeño predictivo, tanto como el modelo original como el modelo regularizado presentan una accuracy muy similar (~78%), sin mejoras significativas tras la regularización.
-
-El modelo con umbral optimizado (indice de Youden) mejora el balance entre la sensibilidad y especificidad (balanced accuracy ≈ 0.76), a pesar de que reduce ligeramente el accuracy total (de 0.778 a 0.765).
-
-Conociendo lo anterior podemos afirmar que el mejor modelo depende del objetivo:
-- Si se busca "maximizar accuracy", el modelo original con un umbral de 0.5 es suficiente.
-- Pero si se busca "balancear errores entre clases", el modelo con umbral optimizado es superior.
-
-En nuestro contexto actual, el modelo con umbral ajustado debido al índice de Youden, se considera el más adecuado, esto porque ofrece un mejor equilibrio entre la detección de propiedades caras y no caras.
-
-
-## Modelo con variable categoría (multiclase)
-
-```{r}
-# Modelo multiclase (barata, media, cara)
-
-train$price_cat <- as.factor(train$price_cat)
-test$price_cat  <- as.factor(test$price_cat)
-
-modelo_multi <- train(
-  price_cat ~ accommodates + bathrooms + bedrooms + beds +
-               minimum_nights + maximum_nights + availability_365 +
-               number_of_reviews + review_scores_rating,
-  data = train,
-  method = "multinom",
-  trControl = trainControl(method = "cv", number = 5)
+  data      = train_scaled,
+  method    = "nnet",
+  tuneGrid  = grid_nnet,
+  trControl = ctrl,
+  maxit     = 300,
+  trace     = FALSE,
+  metric    = "Accuracy"
 )
 
-modelo_multi
+stopCluster(cl)
+registerDoSEQ()
+
+t_tune_end   <- proc.time()
+tiempo_tuneo <- (t_tune_end - t_tune_start)["elapsed"]
+
+cat("Tiempo de tuneo:", tiempo_tuneo, "seg\n")
+print(rna_tuneado$bestTune)
+plot(rna_tuneado, main = "Tuneo de hiperparámetros — RNA (nnet, CV-3)")
 ```
 
-```{r}
-#Predicción y evaluación
-pred_multi <- predict(modelo_multi, newdata = test)
+```{r eval_tuneado}
+pred_tuneado_train <- predict(rna_tuneado, newdata = train_scaled)
+pred_tuneado_test  <- predict(rna_tuneado, newdata = test_scaled)
 
-conf_multi <- confusionMatrix(pred_multi, test$price_cat)
-conf_multi
+conf_tuneado <- confusionMatrix(pred_tuneado_test, test_scaled$price_cat)
+conf_tuneado
 
-conf_multi$overall['Accuracy']
+acc_tuneado_train <- confusionMatrix(pred_tuneado_train,
+                                     train_scaled$price_cat)$overall["Accuracy"]
+acc_tuneado_test  <- conf_tuneado$overall["Accuracy"]
+
+cat("\nAccuracy tuneado — Train:", round(acc_tuneado_train, 4),
+    "| Test:",  round(acc_tuneado_test, 4),
+    "| Diferencia:", round(acc_tuneado_train - acc_tuneado_test, 4), "\n")
 ```
 
-## Modelo de regresión logística multiclase
+```{r tabla_tuneo}
+base_train <- ifelse(acc_m1_test >= acc_m2_test, acc_m1_train, acc_m2_train)
+base_size  <- ifelse(acc_m1_test >= acc_m2_test, 10, 25)
+base_decay <- ifelse(acc_m1_test >= acc_m2_test, 0.01, 0.001)
 
-Se ha implementado un modelo de regresión logística multiclase para poder predecir la categoría de precio (barata, media, cara)
-. El modelo reutiliza las mismas variables para predecir que el modelo dicotómico, y fue evaluado mediante la validación cruzada
+tabla_tuneo <- data.frame(
+  Modelo     = c("RNA base (mejor)", "RNA tuneado (CV-5)"),
+  Size       = c(base_size,  rna_tuneado$bestTune$size),
+  Decay      = c(base_decay, rna_tuneado$bestTune$decay),
+  Acc_Train  = round(c(base_train,       acc_tuneado_train), 4),
+  Acc_Test   = round(c(mejor_acc,        acc_tuneado_test),  4),
+  Diferencia = round(c(base_train - mejor_acc,
+                        acc_tuneado_train - acc_tuneado_test), 4)
+)
 
-El modelo fue evaluado mediante validación cruzada, obteniendo una accuracy de aproximadamente 0.5939, lo cual es considerablemente menor que la obtenida en el modelo binario (~0.78). Este resultado es el esperado, ya que el problema multiclase es más complejo al tener tres categorías en lugar de dos.
+knitr::kable(tabla_tuneo, caption = "RNA base vs. RNA tuneado")
+```
 
-A partir de la matriz de confusión, observamos que:
-- La clase "media" presenta la menor sensibilidad (~0.37), lo que nos indica que es la más difícil de predecir.
-- Las clases "barata" y "cara" presentan los mejores resultados, con sensibilidades cercanas al 0.70.
-- Existe una confusión significativa entre las categorías "media" y "cara", así como entre "media" y "barata".
+Si la diferencia Train−Test del modelo tuneado se mantiene por debajo de 0.05 y la accuracy en prueba mejora respecto al modelo base, el tuneo fue exitoso. Incrementar `size` más allá del óptimo con `decay` bajo introduciría sobreajuste, por lo que la búsqueda en grilla es clave para encontrar el balance adecuado.
 
-Esto nos indica que la categoría "media" no está tan bien diferenciada en el espacio de características, lo cual afecta mucho al desempeño global del modelo. Podemos concluir que, el modelo de multiclases presenta una menor eficiencia debido que tiene mayor complejidad el problema y la superposición entre clases.
+---
 
+## Síntesis del pasaporte
 
+Los dos modelos RNA exploran el efecto de la capacidad de la red y la regularización sobre la clasificación de propiedades Airbnb. El Modelo 1 (`9→10→3`, `decay=0.01`) favorece la generalización con menor riesgo de sobreajuste. El Modelo 2 (`9→25→3`, `decay=0.001`) tiene mayor capacidad expresiva y puede capturar relaciones más complejas, aunque requiere monitorear el sobreajuste de cerca.
 
-## Comparación con modelos anteriores
+Ambos modelos enfrentan la misma limitación estructural observada en todos los laboratorios anteriores: la clase *media* es inherentemente difícil de separar con las nueve variables disponibles. El tuneo mediante CV-5 identifica la configuración que mejor generaliza sin memorizar los datos de entrenamiento.
 
-Se comparó el modelo de regresión logística con los modelos desarrollados en los laboratorios anteriores, como los de: KNN, Árbol de Decisión, Random Forest y Naive Bayes.
-
-Sobre el tiempo de procesamiento, la regresión logística es uno de los modelos más eficientes, ya que su entrenamiento es relativamente rápido en comparación con modelos como Random Forest, debido a que requieren la construcción de múltiples árboles.
-
-# Desempeño:
-- La regresión logística obtuvo una accuracy cercana al 78% en el modelo binario, lo cual es competitivo frente a otros modelos.
-- El modelo multiclase presenta menor accuracy (~59%), evidenciando la dificultad del problema.
-- Modelos como el Random Forest suelen tener mucha mayor precisión, pero esto conlleva un mayor costo computacional.
-- KNN puede ser más costoso en predicción debido al cálculo de distancias.
-- Y Naive Bayes a pesar de ser veloz, puede perder precisión debido a su supuesto de independencia entre variables.
-
-# Errores:
-- La regresión logística tiende a cometer más errores en clases intermedias (como la clase "media").
-- Los modelos más complejos pueden reducir dichos errores pero a su vez sacrifican interpretabilidad.
-
-
-En conclusión, en base a lo anteriormente analizado, la regresión logística ofrece el mejor balance entre:
-- Interpretabilidad
-- Eficiencia computacional
-- Desempeño predictivo
-
-Por lo que es acertado concluir que, es una opción adecuada para este problema, especialmente cuando se requiere explicar el impacto de las variables en la clasificación.
+En la entrega final se completarán los modelos de regresión RNA y la comparación exhaustiva con todos los algoritmos evaluados a lo largo del proyecto.

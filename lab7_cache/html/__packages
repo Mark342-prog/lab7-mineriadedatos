@@ -1,0 +1,9 @@
+dplyr
+ggplot2
+lattice
+caret
+nnet
+neuralnet
+foreach
+iterators
+doParallel
