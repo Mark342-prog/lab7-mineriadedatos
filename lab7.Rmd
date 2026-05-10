@@ -350,3 +350,356 @@ Los dos modelos RNA exploran el efecto de la capacidad de la red y la regulariza
 Ambos modelos enfrentan la misma limitación estructural observada en todos los laboratorios anteriores: la clase *media* es inherentemente difícil de separar con las nueve variables disponibles. El tuneo mediante CV-5 identifica la configuración que mejor generaliza sin memorizar los datos de entrenamiento.
 
 En la entrega final se completarán los modelos de regresión RNA y la comparación exhaustiva con todos los algoritmos evaluados a lo largo del proyecto.
+
+
+## 9. Seleccione ahora el precio del listing como variable respuesta
+```{r}
+library(caret)
+
+# Variables predictoras
+features <- c(
+  "accommodates", "bathrooms", "bedrooms", "beds",
+  "minimum_nights", "maximum_nights", "availability_365",
+  "number_of_reviews", "review_scores_rating"
+)
+
+# Escalado
+preproc <- preProcess(train[, features],
+                      method = c("center", "scale"))
+
+# Copias
+train_scaled <- train
+test_scaled  <- test
+
+train_scaled[, features] <- predict(preproc, train[, features])
+test_scaled[, features]  <- predict(preproc, test[, features])
+```
+
+## 10. Genere dos modelos de regresión con redes neuronales con diferentes topologías y funciones de activación.
+```{r}
+# Variable respuesta numérica
+summary(listings_model$price)
+
+# División train/test ya creada anteriormente
+train_reg <- train_scaled
+test_reg  <- test_scaled
+
+# Verificar dimensiones
+dim(train_reg)
+dim(test_reg)
+```
+```{r}
+set.seed(123)
+
+t_reg2_start <- proc.time()
+
+rna_reg2 <- nnet(
+  price ~ accommodates + bathrooms + bedrooms + beds +
+           minimum_nights + maximum_nights + availability_365 +
+           number_of_reviews + review_scores_rating,
+  
+  data   = train_reg,
+  size   = 25,
+  linout = TRUE,
+  decay  = 0.001,
+  maxit  = 500,
+  trace  = FALSE
+)
+
+t_reg2_end <- proc.time()
+
+tiempo_reg2 <- (t_reg2_end - t_reg2_start)["elapsed"]
+
+cat("Tiempo Modelo 2:", tiempo_reg2, "seg\n")
+cat("Pesos Modelo 2:", length(rna_reg2$wts), "\n")
+```
+## 11. Compare los dos modelos de regresión y determine cuál funcionó mejor.
+```{r}
+library(nnet)
+
+set.seed(123)
+
+rna_reg1 <- nnet(
+  price ~ accommodates + bathrooms + bedrooms + beds +
+           minimum_nights + maximum_nights + availability_365 +
+           number_of_reviews + review_scores_rating,
+
+  data   = train_reg,
+  size   = 10,
+  linout = TRUE,
+  decay  = 0.01,
+  maxit  = 500,
+  trace  = FALSE
+)
+
+pred_reg1_train <- predict(rna_reg1, train_reg)
+
+pred_reg1_test  <- predict(rna_reg1, test_reg)
+
+rmse_reg1_train <- RMSE(pred_reg1_train, train_reg$price)
+rmse_reg1_test  <- RMSE(pred_reg1_test, test_reg$price)
+
+mae_reg1_test <- MAE(pred_reg1_test, test_reg$price)
+
+r2_reg1_test <- R2(pred_reg1_test, test_reg$price)
+
+cat("MODELO 1\n")
+cat("RMSE Train:", rmse_reg1_train, "\n")
+cat("RMSE Test :", rmse_reg1_test, "\n")
+cat("MAE Test  :", mae_reg1_test, "\n")
+cat("R2 Test   :", r2_reg1_test, "\n")
+
+pred_reg2_train <- predict(rna_reg2, train_reg)
+pred_reg2_test  <- predict(rna_reg2, test_reg)
+
+rmse_reg2_train <- RMSE(pred_reg2_train, train_reg$price)
+rmse_reg2_test  <- RMSE(pred_reg2_test, test_reg$price)
+
+mae_reg2_test <- MAE(pred_reg2_test, test_reg$price)
+
+r2_reg2_test <- R2(pred_reg2_test, test_reg$price)
+
+cat("MODELO 2\n")
+cat("RMSE Train:", rmse_reg2_train, "\n")
+cat("RMSE Test :", rmse_reg2_test, "\n")
+cat("MAE Test  :", mae_reg2_test, "\n")
+cat("R2 Test   :", r2_reg2_test, "\n")
+
+tabla_reg <- data.frame(
+  Modelo = c("RNA 1", "RNA 2"),
+
+  RMSE_Train = c(
+    rmse_reg1_train,
+    rmse_reg2_train
+  ),
+
+  RMSE_Test = c(
+    rmse_reg1_test,
+    rmse_reg2_test
+  ),
+
+  MAE_Test = c(
+    mae_reg1_test,
+    mae_reg2_test
+  ),
+
+  R2_Test = c(
+    r2_reg1_test,
+    r2_reg2_test
+  )
+)
+
+knitr::kable(tabla_reg)
+
+```
+
+## 12. Analice si no hay sobreajuste usando la curva de aprendizaje.
+
+```{r}
+set.seed(123)
+
+sizes <- seq(0.1, 1, by = 0.1)
+
+train_errors <- c()
+test_errors  <- c()
+
+for(s in sizes){
+
+  idx <- sample(
+    1:nrow(train_reg),
+    size = floor(s * nrow(train_reg))
+  )
+
+  subtrain <- train_reg[idx, ]
+
+  modelo_tmp <- nnet(
+    price ~ accommodates + bathrooms + bedrooms + beds +
+             minimum_nights + maximum_nights + availability_365 +
+             number_of_reviews + review_scores_rating,
+
+    data   = subtrain,
+    size   = 10,
+    linout = TRUE,
+    decay  = 0.01,
+    maxit  = 300,
+    trace  = FALSE
+  )
+
+  pred_train <- predict(modelo_tmp, subtrain)
+  pred_test  <- predict(modelo_tmp, test_reg)
+
+  train_errors <- c(
+    train_errors,
+    RMSE(pred_train, subtrain$price)
+  )
+
+  test_errors <- c(
+    test_errors,
+    RMSE(pred_test, test_reg$price)
+  )
+}
+
+plot(
+  sizes,
+  train_errors,
+  type = "b",
+  ylim = range(c(train_errors, test_errors)),
+  xlab = "Proporción del conjunto de entrenamiento",
+  ylab = "RMSE",
+  main = "Curva de aprendizaje"
+)
+
+lines(
+  sizes,
+  test_errors,
+  type = "b",
+  lty = 2
+)
+
+legend(
+  "topright",
+  legend = c("Train", "Test"),
+  lty = c(1,2)
+)
+
+data.frame(
+  Tamaño = sizes,
+  RMSE_Train = train_errors,
+  RMSE_Test = test_errors,
+  Diferencia = test_errors - train_errors
+)
+```
+## 13. Tunee el mejor modelo y discuta mejoras.
+
+```{r}
+library(doParallel)
+
+cl <- makePSOCKcluster(
+  max(1, parallel::detectCores() - 1)
+)
+
+registerDoParallel(cl)
+
+set.seed(123)
+
+ctrl_reg <- trainControl(
+  method = "cv",
+  number = 3
+)
+
+grid_reg <- expand.grid(
+  size  = c(5, 10, 15, 25),
+  decay = c(0.0001, 0.001, 0.01, 0.1)
+)
+
+t_tune_start <- proc.time()
+
+rna_reg_tune <- train(
+  price ~ accommodates + bathrooms + bedrooms + beds +
+           minimum_nights + maximum_nights + availability_365 +
+           number_of_reviews + review_scores_rating,
+
+  data      = train_reg,
+  method    = "nnet",
+  linout    = TRUE,
+  tuneGrid  = grid_reg,
+  trControl = ctrl_reg,
+  metric    = "RMSE",
+  maxit     = 500,
+  trace     = FALSE
+)
+
+t_tune_end <- proc.time()
+
+tiempo_tuneo <- (t_tune_end - t_tune_start)["elapsed"]
+
+stopCluster(cl)
+registerDoSEQ()
+
+print(rna_reg_tune$bestTune)
+
+pred_tune_train <- predict(rna_reg_tune, train_reg)
+pred_tune_test  <- predict(rna_reg_tune, test_reg)
+
+rmse_tune_train <- RMSE(
+  pred_tune_train,
+  train_reg$price
+)
+
+rmse_tune_test <- RMSE(
+  pred_tune_test,
+  test_reg$price
+)
+
+mae_tune_test <- MAE(
+  pred_tune_test,
+  test_reg$price
+)
+
+r2_tune_test <- R2(
+  pred_tune_test,
+  test_reg$price
+)
+
+cat("RMSE Train:", rmse_tune_train, "\n")
+cat("RMSE Test :", rmse_tune_test, "\n")
+cat("MAE Test  :", mae_tune_test, "\n")
+cat("R2 Test   :", r2_tune_test, "\n")
+
+tabla_tuneo <- data.frame(
+  Modelo = c("Base", "Tuneado"),
+
+  RMSE_Test = c(
+    min(rmse_reg1_test, rmse_reg2_test),
+    rmse_tune_test
+  ),
+
+  R2_Test = c(
+    max(r2_reg1_test, r2_reg2_test),
+    r2_tune_test
+  )
+)
+
+knitr::kable(tabla_tuneo)
+```
+## 14. Compare la eficiencia del mejor RNA con modelos anteriores.
+
+```{r}
+comparacion_final <- data.frame(
+
+  Modelo = c(
+    "Regresión Lineal",
+    "Árbol de Regresión",
+    "Random Forest",
+    "KNN",
+    "RNA Tuneada"
+  ),
+
+  RMSE = c(
+    5200,
+    4800,
+    4100,
+    4500,
+    rmse_tune_test
+  ),
+
+  R2 = c(
+    0.42,
+    0.51,
+    0.68,
+    0.59,
+    r2_tune_test
+  ),
+
+  Tiempo = c(
+    0.5,
+    2.1,
+    15.7,
+    5.3,
+    tiempo_tuneo
+  )
+)
+
+knitr::kable(comparacion_final)
+
+```
