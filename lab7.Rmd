@@ -703,3 +703,100 @@ comparacion_final <- data.frame(
 knitr::kable(comparacion_final)
 
 ```
+
+
+
+# Información faltante
+```{r}
+# Información faltante
+
+library(randomForest)
+set.seed(123)
+
+rf_model <- randomForest(
+  price_cat ~ accommodates + bathrooms + bedrooms + beds +
+              minimum_nights + maximum_nights + availability_365 +
+              number_of_reviews + review_scores_rating,
+  data = train_scaled,
+  ntree = 100
+)
+
+pred_rf_train <- predict(rf_model, train_scaled)
+pred_rf_test  <- predict(rf_model, test_scaled)
+
+acc_rf_train <- confusionMatrix(pred_rf_train, train_scaled$price_cat)$overall["Accuracy"]
+acc_rf_test  <- confusionMatrix(pred_rf_test,  test_scaled$price_cat)$overall["Accuracy"]
+kappa_rf     <- confusionMatrix(pred_rf_test,  test_scaled$price_cat)$overall["Kappa"]
+
+cat("RF Train:", acc_rf_train, "| Test:", acc_rf_test, "| Kappa:", kappa_rf, "\n")
+```
+
+## 15. Comparación del mejor modelo RNA para clasificación con algoritmos anteriores
+
+El mejor modelo de clasificación RNA (Modelo 2 tuneado, 9→25→3, decay=0.001, accuracy=0.6168, Kappa=0.4249) supera a todos los algoritmos de clasificación triclase evaluados bajo las mismas condiciones experimentales:
+KNN k=15 (0.6019), SVM RBF C=1 (0.6027) y Random Forest (0.6377 en prueba, aunque con sobreajuste severo Train=0.9882).
+
+Sin embargo, ninguno de estos modelos es comparable con la Regresión Logística (0.778) porque esta resuelve un problema binario distinto (cara vs. no cara), por lo que no constituye competencia válida en esta comparación.
+
+La RNA tuneada destaca por combinar el mayor accuracy triclase sin sobreajuste (ΔTrain−Test=0.0015), siendo el modelo más confiable para clasificar propiedades Airbnb en las tres categorías de precio.
+
+
+## 16. Comparación del mejor modelo RNA para regresión con algoritmos anteriores
+
+Bajo las mismas condiciones experimentales: (set.seed(123), split 70/30, price directo)... el RNA Modelo 2 (9→25→3, RMSE=2,308.32, R²=0.2887) es el mejor modelo de regresión evaluado hasta el momento, superando al:
+KNN k=7 (RMSE=2,516.13, R²=0.157),
+SVR tuneado (RMSE=2,738.14, R²=−0.001),
+y Naive Bayes (RMSE=2,816.22, R²=0.003).
+
+Los modelos de Labs 3 y 4 (Regresión Lineal y Árbol de Regresión) usaron log_price con split 80/20 distinto y no son comparables en magnitud.
+
+El RNA Modelo 2 es el único que supera R²=0.25, confirmando que las redes neuronales capturan mejor las relaciones no lineales entre las variables predictoras y el precio, aunque un R² de 0.29 sigue siendo bajo, reflejo de la alta variabilidad y valores extremos del precio en el dataset.
+
+
+
+## 17. Conclusión: mejores modelos para clasificación y regresión
+
+###Tabla resumen. Clasificación (3 clases, mismas condiciones)
+| Modelo                  |Acc_Test| Kappa  | Diagnóstico         |
+|---                      |--      |---     |---                  |
+| Naive Bayes (Lab 5)     | 0.9086 | 0.8600 | Mejor accuracy      |
+| Random Forest (Lab 9*)  | 0.6377 | 0.4563 | Sobreajuste severo  |
+| RNA Tuneada (Lab 9)     | 0.6168 | 0.4249 | Mejor balance       |
+| RNA Modelo 2 (Lab 9)    | 0.6180 | 0.4267 | Buen ajuste         |
+| SVM RBF C=1 (Lab 8)     | 0.6027 | 0.4037 | Buen ajuste         |
+| KNN k=15 (Lab 6)        | 0.6019 | 0.4026 | Buen ajuste         |
+| Reg. Logística (Lab 7)  | 0.7780 | 0.4750 | Binaria*            |
+
+*Nota: Naive Bayes reportó accuracy muy superior pero bajo condiciones de CV distintas; requiere validación adicional.
+
+
+###Tabla resumen — Regresión (price directo, mismas condiciones)
+
+| Modelo                |RMSE_Test|MAE_Test| R²_Test  |
+|---                    |---      |--      |---       |
+| RNA Modelo 2 (Lab 9)  | 2308.32 | 374.29 | 0.2887   |
+| RNA Tuneada (Lab 9)   | 2372.17 | 334.55 | 0.2491   |
+| KNN k=7 (Lab 6)       | 2516.13 | 331.42 | 0.1570   |
+| SVR Tuneado (Lab 8)   | 2738.14 | 288.82 | -0.0011  |
+| Naive Bayes (Lab 5)   | 2816.22 | 957.95 | 0.0028   |
+
+Para clasificación, el RNA tuneado es el modelo recomendado por combinar el mejor accuracy sin sobreajuste.
+Random Forest tiene mayor accuracy bruta pero su diferencia Train−Test de 0.35 lo descalifica como modelo confiable para producción.
+
+Para regresión, el RNA Modelo 2 es el ganador en R², aunque todos los modelos muestran capacidad predictiva limitada con las variables disponibles, sugiriendo que la incorporación de variables geoespaciales y de texto mejoraría el desempeño.
+
+
+## 18. Análisis de sobreajuste comparativo
+
+| Modelo          |Acc_Train  |Acc_Test| ΔTrain-Test  | Diagnóstico         |
+|---              |--         |--      |--            |---                  |
+| Random Forest   | 0.9882    | 0.6377 | +0.3505      | Sobreajuste severo  |
+| SVM RBF C=1     | 0.6086    | 0.6027 | +0.0059      | Buen ajuste         |
+| SVM Lineal      | 0.5843    | 0.5889 | -0.0046      | Buen ajuste         |
+| RNA Tuneada     | 0.6183    | 0.6168 | +0.0015      | Buen ajuste         |
+| Reg. Logística  | 0.7798    | 0.7780 | +0.0018      | Buen ajuste         |
+
+Random Forest es el único modelo con sobreajuste severo (memoriza el entrenamiento con 98.8% de accuracy pero generaliza solo al 63.8%).
+
+Todos los modelos SVM y RNA muestran diferencias Train−Test menores a 0.01, lo que nos indica una generalización estable.
+Para lograr determinar sobreajuste en clasificación, se comparan accuracy de entrenamiento vs prueba, siendo un umbral práctico de alerta una diferencia superior a 0.05, el cual es un criterio que solo Random Forest incumple en este proyecto.
